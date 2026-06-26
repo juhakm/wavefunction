@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it as below."
+title: "Quantum Mechanical Wavefunction with Spectral Complexity measure"
+authors:
+  - family-names: "Meskanen"
+    given-names: "Juha"
+    orcid: ""   # optional, can be added later
+repository-code: "https://github.com/juhakm/wavefunction"
+url: "https://github.com/juhakm/wavefunction"
+license: "MIT"
+keywords:
+  - quantum field theory
+  - information theory
+  - wavefunction emergence
+  - spectral compression
+  - computational physics
+abstract: >
+  Wavefunction is a Python framework for reconstructing quantum wavefunctions
+  from discrete bitstring configurations using information-theoretic
+  compression principles. The wavefunction is treated as an emergent,
+  minimal (or near-minimal) program encoding the underlying configuration,
+  with amplitude norms defining physical measure. The framework is intended 
+  for research in quantum foundations,
+  information-theoretic physics, and computational field theory.
+version: "0.0.1"
+date-released: "2025-01-01"
+preferred-citation:
+  type: software
+  authors:
+    - family-names: "Meskanen"
+      given-names: "Juha"
+  title: "Wavefunction: Information-Theoretic Wavefunction Reconstruction"
+  year: 2025
+  url: "https://github.com/juhakm/wavefunction"
