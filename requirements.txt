@@ -2,6 +2,6 @@ numpy
 matplotlib
 scipy
 numba
-
+pytest
 twine
 build
