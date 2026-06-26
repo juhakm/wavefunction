@@ -1,5 +1,5 @@
 from .wavefunction import Wavefunction
-from .spectralmode import SpectralMode
+from .wavefunction import SpectralMode
 
 
 __all__ = [
