@@ -41,7 +41,7 @@ Each phase $\phi_i \in [0, 2\pi)$ requires a finite amount of information to spe
 
 With only two modes at phases 0 and $\pi$, very little is needed; with many modes at crowded, uneven phases, somewhat more is required. In practice this term is bounded by $\log_2(N_{\text{modes}})$ and is a second-order correction.
 
-The current implementation uses a simple uniform fixed cost per non-reference mode as a tractable proxy; the reference mode (highest amplitude) is exempt because only *relative* phases are observable — a global phase shift leaves $|\psi(x)|^2$ unchanged.
+
 
 #### Amplitude and the fidelity engine
 
@@ -67,4 +67,9 @@ Smooth, low-frequency, compressible states dominate the measure. Boltzmann brain
 
 ### The conjecture $C_s \propto S_{\text{Euclidean}}$
 
-The central open conjecture (Meskanen 2026, §9) is that the minimum spectral complexity path through configuration space coincides with the minimum Euclidean action path of standard quantum gravity. If true, quantum gravity is Solomonoff induction over compressed descriptions of geometry, and $\hbar$ is the minimum spectral resolution of a finite informational universe.
+The central open conjecture (Meskanen 2026, §9) is that the minimum spectral complexity path through configuration space coincides with the minimum Euclidean action path of standard quantum gravity. 
+
+
+## Note about peformance
+
+Implementing anything computationally heavy with pure python makes no sense. This class should be implemented in 'C'.

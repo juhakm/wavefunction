@@ -3,10 +3,10 @@
 Theory background (Meskanen 2026 — "The Wavefunction as Compression")
 ======================================================================
 The central hypothesis is that the quantum wavefunction is the universe's
-data-compression codec.  Internal observers — themselves composed of
+data-compression codec. Internal observers — themselves composed of
 compressed structures — perceive their constituent degrees of freedom as
-wave-like because they are observing *compressed information*.  The codec
-that produces this compression is the Fourier / spectral decomposition.
+wave-like because they are observing *compressed information*. The codec
+that produces this compression is the spectral decomposition.
 
 Spectral Complexity C_s
 -----------------------
@@ -19,71 +19,108 @@ modes, each characterised by two attributes:
 The *spectral complexity* C_s(ψ) is the total continuous information cost
 needed to specify the set of modes that materially compose ψ:
 
-    C_s(ψ) = Σ_i  [ ω_i / Δω  +  φ_cost(φ_i) ]
+    C_s(ψ) = Σ_i  [ |ω_i| / Δω  +  φ_cost(i) ]
 
 Frequency cost (dominant term)
-    ω_i / Δω is the number of resolution steps Δω needed to locate
-    frequency ω_i.  It is unbounded, continuous, and grows linearly with
-    frequency.  This term *dominates* C_s and is the reason the measure
+    |ω_i| / Δω is the number of resolution steps Δω needed to locate
+    frequency ω_i. It is unbounded, continuous, and grows linearly with
+    frequency. This term *dominates* C_s and is the reason the measure
     exponentially suppresses high-frequency (rough, chaotic) states.
     The identification Δω = ℏ ln 2 connects the minimum frequency
     resolution to Planck's constant (Meskanen 2026, §3.1).
 
 Phase cost (subdominant, bounded)
     Each phase φ_i ∈ [0, 2π) requires a finite amount of information to
-    specify.  The cost is *global* over all modes: it measures how much
-    information is needed to distinguish the phases from one another.
-    With only two modes at phases 0 and π, very little is needed; with
-    many modes at crowded, uneven phases, somewhat more is required.
-    In practice this term is bounded by log₂(N_modes) and is a
-    second-order correction.  The current implementation uses a simple
-    uniform fixed cost per non-reference mode as a tractable proxy; the
-    reference mode (highest amplitude) is exempt because only *relative*
-    phases are observable — a global phase shift leaves |ψ(x)|² unchanged.
+    specify. The cost is *global* over all modes. 
+    
+    Fix v2.00: The actual information needed to specify an unambiguous
+    assignment of phases to n modes is a combinatorial cost that grows with n.
+    Distinguishing n items requires about log2(n!) ~ n*log2(n) bits total 
+    (Stirling). Thus, the default 'stirling' model assigns a marginal phase 
+    cost per non-reference mode = log2(n_retained). The 'flat' proxy is 
+    retained for backwards compatibility.
 
 Amplitude and the fidelity engine
-    Amplitude does not appear as a separate encoding cost.  Instead it
-    determines *which modes are included* in the description via a
+    Amplitude determines *which modes are included* in the description via a
     power-ranked fidelity engine: modes are added in descending power
     order until the accumulated power reaches a target fraction of the
-    total.  Modes below this threshold are simply absent from the
-    description — they are not part of the codec output and contribute
-    zero complexity cost.  This correctly handles the case where many
-    weak modes coexist with a few dominant ones: the dominant modes
-    determine C_s; the weak modes are free.
-
-Solomonoff suppression and the probability profile
-    Under Solomonoff-like induction the prior probability of a
-    configuration is P(ψ) ∝ 2^{-C_s(ψ)}.  Because C_s is a *sum* over
-    independent modes, the probability *factorises*:
-
-        P(ψ) ∝ Π_i  2^{-ω_i/Δω}
-
-    Each mode is suppressed independently and exponentially by its
-    frequency.  The resulting probability profile is Boltzmann-like with
-    inverse temperature β = ln(2)/Δω:
-
-        P(mode i present) ∝ exp(−ln(2) · ω_i / Δω)
-
-    Smooth, low-frequency, compressible states dominate the measure.
-    Boltzmann brains, random fluctuations, and chaotic configurations
-    are exponentially suppressed — not by fine-tuning, but because they
-    require many high-frequency modes to describe.
-
-The conjecture C_s ∝ S_Euclidean
-    The central open conjecture (Meskanen 2026, §4) is that the minimum
-    spectral complexity path through configuration space coincides with
-    the minimum Euclidean action path of standard quantum gravity.  If
-    true, quantum gravity is Solomonoff induction over compressed
-    descriptions of geometry, and ℏ is the minimum spectral resolution
-    of a finite informational universe.
+    total. Modes below this threshold are simply absent from the
+    description.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Basis abstraction (Integrated from spectral_v2.py)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Basis:
+    """A finite, orthonormal (on the sample grid) set of real or complex
+    basis functions, plus the physical frequency associated with each.
+    """
+    name: str
+    vectors: np.ndarray
+    omega: np.ndarray
+    delta_omega: float
+    provenance: str = "generic"
+
+    def project(self, psi: np.ndarray) -> np.ndarray:
+        """Coefficients of psi in this basis via inner product."""
+        return self.vectors.conj() @ psi
+
+    @classmethod
+    def fourier(cls, N: int, dx: float = 1.0) -> "Basis":
+        """Standard periodic DFT basis (v0.01's only option)."""
+        omega = 2.0 * np.pi * np.fft.fftfreq(N, d=dx)
+        k = np.arange(N)
+        vectors = np.exp(-2j * np.pi * np.outer(k, k) / N) / np.sqrt(N)
+        delta_omega = 2.0 * np.pi / (N * dx)
+        return cls("fourier", vectors, omega, delta_omega,
+                   provenance="generic: assumes periodic boundary conditions")
+
+    @classmethod
+    def from_functions(
+        cls,
+        name: str,
+        fn: Callable[[int, np.ndarray], np.ndarray],
+        omega: np.ndarray,
+        grid: np.ndarray,
+        delta_omega: float,
+        provenance: str = "generic",
+    ) -> "Basis":
+        """Build & orthonormalise (Gram-Schmidt) a basis from a generator fn."""
+        n_modes = len(omega)
+        raw = np.array([fn(k, grid) for k in range(n_modes)], dtype=complex)
+        # Gram-Schmidt orthonormalisation (numerically robust via QR)
+        Q, _ = np.linalg.qr(raw.T)
+        vectors = Q.T[:n_modes]
+        return cls(name, vectors, np.asarray(omega), delta_omega, provenance)
+
+
+# ---------------------------------------------------------------------------
+# Result container
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ComplexityResult:
+    C_s: float
+    basis_name: str
+    n_modes_retained: int
+    freq_cost: float
+    phase_cost: float
+    provenance: str
+    all_basis_costs: dict = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (f"ComplexityResult(C_s={self.C_s:.4f}, basis='{self.basis_name}', "
+                f"modes={self.n_modes_retained}, freq={self.freq_cost:.4f}, "
+                f"phase={self.phase_cost:.4f})")
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +129,7 @@ from typing import Optional
 
 @dataclass
 class SpectralMode:
-    """A single Fourier mode in the spectral decomposition of a wavefunction.
-
-    Attributes:
-        frequency: Angular frequency ω (rad / spatial-unit).  Signed —
-            positive and negative frequencies are physically distinct for
-            complex ψ.  The frequency cost uses |ω|.
-        amplitude: Real-valued mode amplitude A ≥ 0, equal to
-            |FFT_k| / N after normalisation.  Used only by the fidelity
-            engine to rank modes by power; it does not appear in C_s.
-        phase: Mode phase φ ∈ [0, 2π), equal to arg(FFT_k) mod 2π.
-            Relative phases between modes determine interference structure
-            and enter C_s through the (subdominant) phase cost term.
-    """
-
+    """A single mode in the spectral decomposition of a wavefunction."""
     frequency: float
     amplitude: float
     phase: float
@@ -120,81 +144,7 @@ class SpectralMode:
 # ---------------------------------------------------------------------------
 
 class Wavefunction:
-    """A normalised complex wavefunction on a uniform 1-D spatial grid.
-
-    The wavefunction ψ(x) is stored as a complex NumPy array of length N.
-    Its primary analytical interface is the spectral complexity C_s(ψ),
-    a continuous, computable measure of how many spectral resources are
-    required to describe ψ to a given fidelity.
-
-    Spectral complexity formula
-    ---------------------------
-    C_s(ψ) = Σ_{i ∈ retained}  [ |ω_i| / Δω  +  φ_cost(i) ]
-
-    where the sum runs over modes retained by the fidelity engine
-    (see below), and:
-
-        |ω_i| / Δω   — frequency cost: dominant, continuous, unbounded.
-                        Mirrors E = ℏω; under Solomonoff suppression
-                        2^{-C_s} this produces an exponential / Boltzmann
-                        distribution over frequency.
-
-        φ_cost(i)     — phase cost: subdominant, bounded.  Zero for the
-                        reference mode (highest amplitude — global phase
-                        unobservable); a fixed resolution cost
-                        `phase_resolution` for every other retained mode.
-                        Represents the information needed to distinguish
-                        this mode's phase from the reference.
-
-    Fidelity engine
-    ---------------
-    Not all FFT bins materially contribute to ψ.  The fidelity engine
-    ranks bins by power (|FFT_k|²) and greedily accumulates them until
-    the retained set accounts for at least `fidelity_target` of the
-    total power.  Only retained modes enter C_s.  This has two effects:
-
-    1.  Correctness: two wavefunctions with the same |ψ(x)|² but
-        different numbers of negligible-power modes receive the same C_s.
-        The codec describes the *observable state*, not a particular
-        representation.
-
-    2.  Stability: noise and numerical artefacts in low-power bins do
-        not inflate C_s.
-
-    Planck identification
-    ---------------------
-    The minimum resolvable frequency Δω defaults to 2π / (N dx), the
-    natural FFT resolution of the grid.  The identification
-    ℏ = Δω / ln(2) connects this resolution to Planck's constant
-    (Meskanen 2026, §3.1).  This is a correspondence to be investigated,
-    not a derivation.
-
-    Args:
-        psi: Complex wavefunction amplitudes on a uniform spatial grid.
-            Normalised to unit L² norm on construction.
-        dx: Spatial grid spacing.  Determines angular frequencies via
-            ω_k = 2π k / (N dx).  Defaults to 1.0.
-        delta_omega: Minimum resolvable angular frequency Δω.  Defaults
-            to the natural FFT resolution 2π / (N dx).
-        fidelity_target: Fraction of total spectral power that the
-            retained modes must collectively explain.  Must be in (0, 1].
-            Higher values retain more modes and increase C_s.
-            Defaults to 0.999 (99.9 % of power).
-        phase_resolution: Continuous cost assigned to the phase of each
-            non-reference retained mode.  Represents the information
-            needed to resolve that mode's phase from the reference to
-            the required precision.  Bounded and subdominant relative to
-            the frequency cost.  Defaults to 1.0 (one unit per mode,
-            interpretable as ~ 1 bit of phase separation information).
-
-    Attributes:
-        dx: Spatial grid spacing.
-        delta_omega: Minimum resolvable angular frequency Δω.
-        fidelity_target: Power-fidelity threshold for mode retention.
-        phase_resolution: Per-mode phase cost for non-reference modes.
-        hbar_identified: Δω / ln(2) — the value of ℏ implied by the
-            grid resolution under the Meskanen (2026) identification.
-    """
+    """A normalised complex wavefunction on a uniform 1-D spatial grid."""
 
     def __init__(
         self,
@@ -202,19 +152,33 @@ class Wavefunction:
         dx: float = 1.0,
         delta_omega: Optional[float] = None,
         fidelity_target: float = 0.999,
+        phase_cost_model: str = "stirling",
         phase_resolution: float = 1.0,
     ) -> None:
         self._psi: np.ndarray = self._normalise(np.asarray(psi, dtype=complex))
         self.dx: float = float(dx)
         self.fidelity_target: float = float(fidelity_target)
+        self.phase_cost_model: str = phase_cost_model
         self.phase_resolution: float = float(phase_resolution)
 
         N = len(self._psi)
-        self.delta_omega: float = (
-            float(delta_omega) if delta_omega is not None
-            else 2.0 * np.pi / (N * self.dx)
-        )
+        # Track bases library
+        self.bases: dict[str, Basis] = {}
+        
+        # Calculate/Assign natural resolution constraints
+        fourier_delta = 2.0 * np.pi / (N * self.dx)
+        self.delta_omega: float = float(delta_omega) if delta_omega is not None else fourier_delta
         self.hbar_identified: float = self.delta_omega / np.log(2.0)
+
+        # Register default fourier basis automatically
+        # Note: dynamic bases overwrite delta_omega using their own configurations.
+        self.register_basis(Basis.fourier(N, dx=self.dx))
+
+    def register_basis(self, basis: Basis) -> None:
+        """Registers a new Basis candidate library for robust searching."""
+        if basis.vectors.shape[1] != self.N:
+            raise ValueError(f"Basis size mismatch. Expected {self.N}, got {basis.vectors.shape[1]}")
+        self.bases[basis.name] = basis
 
     # ------------------------------------------------------------------
     # Core properties
@@ -237,59 +201,44 @@ class Wavefunction:
 
     @property
     def probability_density(self) -> np.ndarray:
-        """|ψ(x)|² — Born-rule probability density, shape (N,).
-
-        Normalised so that sum(|ψ|²) = 1 (discrete L² norm).
-        """
+        """|ψ(x)|² — Born-rule probability density, shape (N,)."""
         return np.abs(self._psi) ** 2
 
     # ------------------------------------------------------------------
     # Fidelity engine — mode selection
     # ------------------------------------------------------------------
 
-    def retained_modes(self) -> list[SpectralMode]:
-        """Return the set of spectral modes retained by the fidelity engine.
-
-        Modes are ranked by power (|FFT_k|²) in descending order and
-        accumulated greedily until the retained set accounts for at least
-        `fidelity_target` of the total power.  The result is the minimal
-        set of modes that reproduces ψ(x) to the required fidelity.
-
-        The reference mode (highest power, first in the ranked list) is
-        flagged implicitly: its phase is the global reference and costs
-        nothing.  All other retained modes pay `phase_resolution`.
-
-        Returns:
-            List of SpectralMode objects sorted by ascending |ω|, one per
-            retained FFT bin.  The highest-power mode appears somewhere
-            in this list and is identifiable as the one with the largest
-            amplitude.
+    def retained_modes(self, basis_name: str = "fourier") -> list[SpectralMode]:
+        """Return the set of spectral modes retained from a specified basis library.
+        
+        Args:
+            basis_name: The target registered basis to query. Defaults to 'fourier'.
         """
-        N = self.N
-        fft_coeffs: np.ndarray = np.fft.fft(self._psi)
-        freqs: np.ndarray = 2.0 * np.pi * np.fft.fftfreq(N, d=self.dx)
-        power: np.ndarray = np.abs(fft_coeffs) ** 2
-        total_power: float = float(power.sum())
+        if basis_name not in self.bases:
+            raise ValueError(f"Basis '{basis_name}' is not registered.")
+        
+        basis = self.bases[basis_name]
+        coeffs = basis.project(self._psi)
+        power = np.abs(coeffs) ** 2
+        total_power = float(power.sum())
 
         if total_power == 0.0:
             return []
 
-        # Rank bins by descending power
-        sorted_idx: np.ndarray = np.argsort(power)[::-1]
-
-        accumulated: float = 0.0
-        kept: list[int] = []
+        sorted_idx = np.argsort(power)[::-1]
+        accumulated = 0.0
+        kept = []
         for idx in sorted_idx:
             accumulated += float(power[idx])
             kept.append(int(idx))
             if accumulated / total_power >= self.fidelity_target:
                 break
 
-        modes: list[SpectralMode] = [
+        modes = [
             SpectralMode(
-                frequency=float(freqs[k]),
-                amplitude=float(np.abs(fft_coeffs[k])) / N,
-                phase=float(np.angle(fft_coeffs[k]) % (2.0 * np.pi)),
+                frequency=float(basis.omega[k]),
+                amplitude=float(np.abs(coeffs[k])) / self.N,
+                phase=float(np.angle(coeffs[k]) % (2.0 * np.pi)),
             )
             for k in kept
         ]
@@ -297,133 +246,141 @@ class Wavefunction:
         return modes
 
     # ------------------------------------------------------------------
-    # Spectral complexity  C_s(ψ)
+    # Robust multi-basis spectral complexity C_s(ψ)
     # ------------------------------------------------------------------
 
-    def spectral_complexity(self, verbose: bool = False) -> float:
-        """Compute the spectral complexity C_s(ψ).
+    def spectral_complexity(
+        self, 
+        verbose: bool = False,
+        edge_leakage_check: bool = True,
+        edge_leakage_threshold: float = 0.05,
+    ) -> float:
+        """Compute the robust multi-basis spectral complexity C_s(ψ).
 
-        C_s is the total continuous information cost of specifying the
-        retained spectral modes:
-
-            C_s(ψ) = Σ_{i ∈ retained} [ |ω_i| / Δω  +  φ_cost(i) ]
-
-        where φ_cost(i) = 0 for the reference mode (highest amplitude)
-        and `phase_resolution` for all other retained modes.
-
-        The frequency term |ω_i| / Δω is the dominant, unbounded
-        contribution.  The phase term is a bounded correction that
-        accounts for the information needed to distinguish each mode's
-        phase from the reference.
-
-        Under Solomonoff suppression P(ψ) ∝ 2^{-C_s(ψ)}, and because
-        the sum factorises over modes:
-
-            P(ψ) ∝ Π_i  2^{-|ω_i|/Δω}  ·  2^{-φ_cost(i)}
-
-        The probability profile is exponential in frequency — each mode
-        independently suppressed by its oscillation rate.
-
-        Args:
-            verbose: If True, print a per-mode breakdown to stdout.
-
-        Returns:
-            C_s as a non-negative float.  Zero only if no modes are
-            retained (degenerate zero wavefunction).
+        Evaluates the code description cost across all registered bases and selects 
+        the minimum viable configuration profile.
         """
-        modes: list[SpectralMode] = self.retained_modes()
-        if not modes:
-            return 0.0
+        if not self.bases:
+            raise ValueError("No bases registered.")
 
-        # Reference mode: highest amplitude — pays zero phase cost.
-        # Only relative phases are observable; the highest-amplitude mode
-        # is the natural phase reference.  Ties broken by lowest |ω| for
-        # numerical stability (avoids C_s jumping by 1 when two equal-power
-        # modes exchange amplitudes under tiny perturbations).
-        ref_amplitude: float = max(m.amplitude for m in modes)
-        ref_freq_abs: float = min(
-            abs(m.frequency) for m in modes if m.amplitude == ref_amplitude
-        )
+        all_costs: dict[str, float] = {}
+        best_res: Optional[ComplexityResult] = None
+        winning_modes: list[SpectralMode] = []
+        winning_ref_indicators: list[bool] = []
 
-        total: float = 0.0
+        for basis in self.bases.values():
+            coeffs = basis.project(self._psi)
+            power = np.abs(coeffs) ** 2
+            total_power = power.sum()
+            if total_power == 0:
+                continue
+
+            order = np.argsort(power)[::-1]
+            cum = 0.0
+            kept = []
+            for idx in order:
+                cum += power[idx]
+                kept.append(idx)
+                if cum / total_power >= self.fidelity_target:
+                    break
+
+            n_kept = len(kept)
+            freq_cost = float(np.sum(np.abs(basis.omega[kept]) / basis.delta_omega))
+
+            if self.phase_cost_model == "stirling":
+                per_mode = np.log2(n_kept) if n_kept > 1 else 0.0
+                phase_cost = per_mode * max(n_kept - 1, 0)
+            elif self.phase_cost_model == "flat":
+                phase_cost = self.phase_resolution * max(n_kept - 1, 0)
+            else:
+                raise ValueError(f"unknown phase_cost_model: {self.phase_cost_model}")
+
+            cs = freq_cost + phase_cost
+            all_costs[basis.name] = cs
+
+            # Construct temporary structures to align with your verbose printing loops
+            current_modes = [
+                SpectralMode(
+                    frequency=float(basis.omega[k]),
+                    amplitude=float(np.abs(coeffs[k])) / self.N,
+                    phase=float(np.angle(coeffs[k]) % (2.0 * np.pi)),
+                )
+                for k in kept
+            ]
+            current_modes.sort(key=lambda m: abs(m.frequency))
+
+            if best_res is None or cs < best_res.C_s:
+                best_res = ComplexityResult(
+                    C_s=cs, basis_name=basis.name, n_modes_retained=n_kept,
+                    freq_cost=freq_cost, phase_cost=phase_cost,
+                    provenance=basis.provenance,
+                )
+                winning_modes = current_modes
+                
+                # Determine reference index for localized phase metrics
+                ref_amp = max(m.amplitude for m in winning_modes) if winning_modes else 0.0
+                ref_f_abs = min(abs(m.frequency) for m in winning_modes if m.amplitude == ref_amp) if winning_modes else 0.0
+                winning_ref_indicators = [
+                    (m.amplitude == ref_amp and abs(m.frequency) == ref_f_abs) for m in winning_modes
+                ]
+
+        if best_res is None:
+            raise ValueError("psi has zero power in every candidate basis")
+
+        best_res.all_basis_costs = all_costs
 
         if verbose:
-            print(f"\n  {'i':>4}  {'ω':>10}  {'A':>9}  {'φ/2π':>7}  "
+            print(f"\nWinning Basis: '{best_res.basis_name}' ({best_res.provenance})")
+            print(f"  {'i':>4}  {'ω':>10}  {'A':>9}  {'φ/2π':>7}  "
                   f"{'|ω|/Δω':>10}  {'φ_cost':>7}  {'mode C_s':>9}")
             print("  " + "-" * 62)
-
-        for i, mode in enumerate(modes):
-            freq_cost: float = abs(mode.frequency) / self.delta_omega
-            # Reference mode (global phase) is unobservable — zero phase cost
-            is_reference: bool = (
-                mode.amplitude == ref_amplitude
-                and abs(mode.frequency) == ref_freq_abs
-            )
-            phase_cost: float = 0.0 if is_reference else self.phase_resolution
-            mode_cs: float = freq_cost + phase_cost
-            total += mode_cs
-
-            if verbose:
+            
+            basis_obj = self.bases[best_res.basis_name]
+            for i, mode in enumerate(winning_modes):
+                f_cost = abs(mode.frequency) / basis_obj.delta_omega
+                is_ref = winning_ref_indicators[i]
+                
+                # Deduce printed analytical slice step costs
+                if self.phase_cost_model == "stirling":
+                    p_cost = 0.0 if is_ref else np.log2(best_res.n_modes_retained)
+                else:
+                    p_cost = 0.0 if is_ref else self.phase_resolution
+                
+                m_cs = f_cost + p_cost
                 print(f"  {i:>4}  {mode.frequency:>10.4f}  {mode.amplitude:>9.5f}"
                       f"  {mode.phase / (2*np.pi):>7.4f}"
-                      f"  {freq_cost:>10.3f}  {phase_cost:>7.2f}  {mode_cs:>9.3f}"
-                      + ("  ← ref" if is_reference else ""))
-
-        if verbose:
+                      f"  {f_cost:>10.3f}  {p_cost:>7.2f}  {m_cs:>9.3f}"
+                      + ("  ← ref" if is_ref else ""))
             print("  " + "-" * 62)
-            n_ret = len(modes)
-            print(f"  C_s = {total:.4f}   "
-                  f"({n_ret} modes retained at fidelity ≥ {self.fidelity_target})\n")
+            print(f"  C_s = {best_res.C_s:.4f}  (Freq: {best_res.freq_cost:.2f}, Phase: {best_res.phase_cost:.2f})")
+            print(f"  All evaluated candidate options: {all_costs}\n")
 
-        return total
+        if edge_leakage_check and best_res.basis_name == "fourier":
+            mag = np.abs(self._psi)
+            edge = max(mag[0], mag[-1])
+            peak = mag.max() + 1e-30
+            if edge / peak > edge_leakage_threshold:
+                print(f"  [warning] Fourier basis won, but |psi| at domain edge "
+                      f"is {100*edge/peak:.1f}% of peak — signal is likely "
+                      f"non-periodic on this grid; C_s may be leakage-inflated. "
+                      f"Consider registering a boundary-matched basis.")
+
+        return best_res.C_s
 
     # ------------------------------------------------------------------
     # Derived quantities
     # ------------------------------------------------------------------
 
     def solomonoff_weight(self) -> float:
-        """Unnormalised Solomonoff prior weight 2^{-C_s(ψ)}.
-
-        Under Solomonoff-like induction, configurations are weighted by
-        their compressibility.  The weight is exponential in C_s:
-
-            w(ψ) = 2^{-C_s(ψ)}
-
-        Because C_s factorises over modes, this equals the product of
-        per-mode suppression factors:
-
-            w(ψ) = Π_i  2^{-|ω_i|/Δω}  ·  2^{-φ_cost(i)}
-
-        Smooth, low-frequency wavefunctions receive exponentially higher
-        weight than chaotic, high-frequency ones.
-
-        Returns:
-            Float in (0, 1].  Returns 1.0 for the zero wavefunction
-            (no retained modes, C_s = 0).
-        """
+        """Unnormalised Solomonoff prior weight 2^{-C_s(ψ)}."""
         return 2.0 ** (-self.spectral_complexity())
 
-    def mode_suppression_factors(self) -> dict[float, float]:
-        """Per-mode Boltzmann suppression factors from the frequency cost.
-
-        For each retained mode i, the frequency term |ω_i| / Δω
-        contributes an independent suppression factor:
-
-            s_i = 2^{-|ω_i|/Δω} = exp(−ln2 · |ω_i| / Δω)
-
-        This is a Boltzmann factor with inverse temperature
-        β = ln(2) / Δω.  The identification ℏ = Δω / ln(2) makes
-        β = 1 / ℏ in natural units, consistent with E = ℏω.
-
-        Returns:
-            Dict mapping ω_i (float) → unnormalised suppression factor s_i.
-            The factors are *not* normalised to a probability distribution
-            here; use solomonoff_weight() for the joint weight of the full
-            wavefunction.
-        """
+    def mode_suppression_factors(self, basis_name: str = "fourier") -> dict[float, float]:
+        """Per-mode Boltzmann suppression factors from the frequency cost."""
+        basis = self.bases[basis_name]
         return {
-            m.frequency: 2.0 ** (-abs(m.frequency) / self.delta_omega)
-            for m in self.retained_modes()
+            m.frequency: 2.0 ** (-abs(m.frequency) / basis.delta_omega)
+            for m in self.retained_modes(basis_name=basis_name)
         }
 
     # ------------------------------------------------------------------
@@ -440,29 +397,9 @@ class Wavefunction:
         dx: float = 0.1,
         **kwargs,
     ) -> "Wavefunction":
-        """Construct a Gaussian wave packet.
-
-        ψ(x) = exp(−(x−x0)² / 4σ²) · exp(i k0 x),  then normalised.
-
-        A Gaussian packet is narrow in both position and momentum space
-        and serves as a natural low-C_s reference state: it has a single
-        dominant frequency k0 and a smooth Gaussian envelope that
-        concentrates spectral power near k0.
-
-        Args:
-            N: Number of grid points.
-            x0: Packet centre in position space.
-            sigma: Position-space width (standard deviation).
-            k0: Carrier wavenumber (dominant angular frequency ω ≈ k0).
-            dx: Spatial grid spacing.
-            **kwargs: Passed to Wavefunction.__init__
-                (e.g. fidelity_target, phase_resolution).
-
-        Returns:
-            Normalised Wavefunction instance.
-        """
+        """Construct a Gaussian wave packet."""
         x = np.arange(N) * dx
-        psi = np.exp(-((x - x0) ** 2) / (4.0 * sigma ** 2)) * np.exp(1j * k0 * x)
+        psi = np.exp(-((x - x0) ** 2) / (4.0 * (sigma ** 2))) * np.exp(1j * k0 * x)
         return cls(psi, dx=dx, **kwargs)
 
     @classmethod
@@ -475,24 +412,7 @@ class Wavefunction:
         dx: float = 0.1,
         **kwargs,
     ) -> "Wavefunction":
-        """Construct an explicit superposition of plane waves.
-
-        ψ(x) = Σ_i  α_i · exp(i (k_i x + φ_i)),  then normalised.
-
-        Useful for constructing states with known spectral structure and
-        testing how C_s responds to adding modes or shifting phases.
-
-        Args:
-            N: Number of grid points.
-            amplitudes: Real amplitudes α_i for each plane wave.
-            wavenumbers: Wavenumbers k_i (angular frequencies ω_i = k_i).
-            phases: Initial phases φ_i for each plane wave.
-            dx: Spatial grid spacing.
-            **kwargs: Passed to Wavefunction.__init__.
-
-        Returns:
-            Normalised Wavefunction instance.
-        """
+        """Construct an explicit superposition of plane waves."""
         x = np.arange(N) * dx
         psi = np.zeros(N, dtype=complex)
         for a, k, phi in zip(amplitudes, wavenumbers, phases):
@@ -507,22 +427,7 @@ class Wavefunction:
         dx: float = 0.1,
         **kwargs,
     ) -> "Wavefunction":
-        """Construct a maximally chaotic (high-C_s) random wavefunction.
-
-        Draws real and imaginary parts independently from N(0,1).  The
-        resulting state activates all FFT bins with roughly equal power,
-        giving the maximum number of retained modes and hence the highest
-        possible C_s for a given N.  Useful as an upper-bound reference.
-
-        Args:
-            N: Number of grid points.
-            seed: Random seed for reproducibility.
-            dx: Spatial grid spacing.
-            **kwargs: Passed to Wavefunction.__init__.
-
-        Returns:
-            Normalised Wavefunction instance.
-        """
+        """Construct a maximally chaotic (high-C_s) random wavefunction."""
         rng = np.random.default_rng(seed)
         psi = rng.standard_normal(N) + 1j * rng.standard_normal(N)
         return cls(psi, dx=dx, **kwargs)
@@ -532,55 +437,44 @@ class Wavefunction:
     # ------------------------------------------------------------------
 
     def __add__(self, other: "Wavefunction") -> "Wavefunction":
-        """Superpose two wavefunctions: ψ_new = normalise(ψ_a + ψ_b).
-
-        The result is renormalised.  Interference fringes in the
-        superposition share spectral modes, so C_s(ψ_a + ψ_b) is
-        typically less than C_s(ψ_a) + C_s(ψ_b) — the codec description
-        of the superposition is cheaper than two independent descriptions.
-
-        Args:
-            other: Wavefunction on the same grid (same N and dx).
-
-        Returns:
-            New normalised Wavefunction.
-
-        Raises:
-            ValueError: If grid sizes differ.
-        """
+        """Superpose two wavefunctions: ψ_new = normalise(ψ_a + ψ_b)."""
         if self.N != other.N:
-            raise ValueError(
-                f"Grid size mismatch: {self.N} vs {other.N}")
-        return Wavefunction(
+            raise ValueError(f"Grid size mismatch: {self.N} vs {other.N}")
+        
+        new_wf = Wavefunction(
             self._psi + other._psi,
             dx=self.dx,
             delta_omega=self.delta_omega,
             fidelity_target=self.fidelity_target,
+            phase_cost_model=self.phase_cost_model,
             phase_resolution=self.phase_resolution,
         )
+        # Inherit non-default bases registered in the parent states
+        for name, basis in self.bases.items():
+            if name != "fourier":
+                new_wf.register_basis(basis)
+        return new_wf
 
     def __mul__(self, scalar: complex) -> "Wavefunction":
         """Scale ψ by a complex scalar (result is renormalised)."""
-        return Wavefunction(
+        new_wf = Wavefunction(
             self._psi * scalar,
             dx=self.dx,
             delta_omega=self.delta_omega,
             fidelity_target=self.fidelity_target,
+            phase_cost_model=self.phase_cost_model,
             phase_resolution=self.phase_resolution,
         )
+        for name, basis in self.bases.items():
+            if name != "fourier":
+                new_wf.register_basis(basis)
+        return new_wf
 
     def __rmul__(self, scalar: complex) -> "Wavefunction":
         return self.__mul__(scalar)
 
     def inner_product(self, other: "Wavefunction") -> complex:
-        """Discrete inner product ⟨self|other⟩ = Σ_x ψ*(x) φ(x) dx.
-
-        Args:
-            other: Wavefunction on the same grid.
-
-        Returns:
-            Complex scalar.
-        """
+        """Discrete inner product ⟨self|other⟩ = Σ_x ψ*(x) φ(x) dx."""
         return complex(np.sum(self._psi.conj() * other._psi) * self.dx)
 
     # ------------------------------------------------------------------
@@ -589,28 +483,15 @@ class Wavefunction:
 
     @staticmethod
     def _normalise(psi: np.ndarray) -> np.ndarray:
-        """Normalise ψ to unit L² norm.
-
-        Args:
-            psi: Complex array.
-
-        Returns:
-            ψ / ‖ψ‖.
-
-        Raises:
-            ValueError: If ψ is identically zero.
-        """
+        """Normalise ψ to unit L² norm."""
         norm: float = float(np.sqrt(np.sum(np.abs(psi) ** 2)))
         if norm == 0.0:
             raise ValueError("Cannot normalise a zero wavefunction.")
         return psi / norm
 
     def __repr__(self) -> str:
-        cs = self.spectral_complexity()
-        n_modes = len(self.retained_modes())
-        return (
-            f"Wavefunction(N={self.N}, dx={self.dx}, "
-            f"C_s={cs:.3f}, modes={n_modes}, "
-            f"ℏ_id={self.hbar_identified:.3e})"
-        )
-
+        # Avoid computational explosion during debug print strings
+        return (f"Wavefunction(N={self.N}, dx={self.dx}, "
+                f"fidelity={self.fidelity_target}, model='{self.phase_cost_model}', "
+                f"bases_avail={list(self.bases.keys())})")
+    
